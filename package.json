@@ -1,0 +1,9 @@
+{
+  "type": "module",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "input": "^1.0.1",
+    "openai": "^6.3.0",
+    "telegram": "^2.26.22"
+  }
+}
