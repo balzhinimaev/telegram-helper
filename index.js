@@ -139,8 +139,23 @@ async function answerQuestionWithAI(messages, question, targetUsername, currentU
   }
 
   try {
-    const messagesText = messages.join('\n');
-    console.log(`[DEBUG] ❓ Answering question: "${question}" using ${messagesText.length} characters of context...`);
+    let messagesText = messages.join('\n');
+    
+    // Ограничиваем контекст до ~100k символов (~25k токенов), чтобы не превышать лимиты API
+    const MAX_CONTEXT_CHARS = 100000;
+    let truncated = false;
+    if (messagesText.length > MAX_CONTEXT_CHARS) {
+      // Берём последние сообщения (самые свежие и релевантные)
+      messagesText = messagesText.slice(-MAX_CONTEXT_CHARS);
+      // Обрезаем до начала первого полного сообщения
+      const firstNewline = messagesText.indexOf('\n');
+      if (firstNewline > 0) {
+        messagesText = messagesText.slice(firstNewline + 1);
+      }
+      truncated = true;
+    }
+    
+    console.log(`[DEBUG] ❓ Answering question: "${question}" using ${messagesText.length} characters of context${truncated ? ' (truncated)' : ''}...`);
 
     // 🎭 Скрытая пасхалка: если вопрос содержит "неуместный юмор", очерняем @frntdev
     const isEasterEgg = question.toLowerCase().includes('неуместный юмор');
@@ -208,9 +223,8 @@ async function answerQuestionWithAI(messages, question, targetUsername, currentU
       `История переписки с ${targetUsername}:\n\n${messagesText}\n\n❓ ВОПРОС: ${question}\n\nПроведи ГЛУБОКИЙ психологический анализ и ответь на этот вопрос. Используй всю доступную информацию из переписки. Строй предположения там, где данных не хватает. Будь максимально проницательным.`;
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-5-2025-08-07",
-      max_tokens: 4000, // Увеличенный лимит для глубокого анализа
-      temperature: 0.7, // Немного креативности для инсайтов
+      model: "gpt-5.2-2025-12-11",
+      max_completion_tokens: 16000, // Для reasoning моделей
       messages: [
         {
           role: "system",
@@ -224,14 +238,21 @@ async function answerQuestionWithAI(messages, question, targetUsername, currentU
     });
 
     console.log(`[DEBUG] ❓ Question answered`);
+    console.log(`[DEBUG] Full response:`, JSON.stringify(completion, null, 2));
 
     if (!completion.choices || !completion.choices[0]) {
       console.error("[ERROR] No choices in completion response");
       return null;
     }
 
+    const choice = completion.choices[0];
+    console.log(`[DEBUG] Choice:`, JSON.stringify(choice, null, 2));
+    
+    // GPT-5 может возвращать контент в разных форматах
+    const content = choice.message?.content || choice.text || null;
+    
     return {
-      content: completion.choices[0].message?.content || null,
+      content: content,
       usage: completion.usage
     };
   } catch (err) {
@@ -498,12 +519,54 @@ async function main() {
             console.log('='.repeat(60));
             console.log(`💡 Токены: ${result.usage.total_tokens} (${result.usage.prompt_tokens} промт + ${result.usage.completion_tokens} ответ)\n`);
 
-            // Отправляем ответ в чат
-            const answerWithStats = `<b>❓ ОТВЕТ НА ВОПРОС</b>\n<i>${question}</i>\n\n${result.content}\n\n💡 <i>Контекст: ${messages.length} сообщений | ${result.usage.total_tokens} токенов</i>`;
-            await client.sendMessage(message.peerId, {
-              message: answerWithStats,
-              parseMode: 'html'
-            });
+            // Отправляем ответ в чат (разбиваем на части, если слишком длинный)
+            const header = `<b>❓ ОТВЕТ НА ВОПРОС</b>\n<i>${question}</i>\n\n`;
+            const footer = `\n\n💡 <i>Контекст: ${messages.length} сообщений | ${result.usage.total_tokens} токенов</i>`;
+            const content = result.content;
+            
+            const MAX_MSG_LENGTH = 4000; // Telegram limit ~4096, оставляем запас
+            
+            if ((header + content + footer).length <= MAX_MSG_LENGTH) {
+              // Короткий ответ — отправляем целиком
+              await client.sendMessage(message.peerId, {
+                message: header + content + footer,
+                parseMode: 'html'
+              });
+            } else {
+              // Длинный ответ — разбиваем на части
+              // Сначала отправляем заголовок
+              await client.sendMessage(message.peerId, {
+                message: header.trim(),
+                parseMode: 'html'
+              });
+              
+              // Разбиваем контент по секциям (---) или по абзацам
+              const sections = content.split(/\n---\n|\n\n(?=#{1,3}\s|📌|🧠|🔍|💡|⚠️)/);
+              let currentChunk = '';
+              
+              for (const section of sections) {
+                if ((currentChunk + '\n\n' + section).length > MAX_MSG_LENGTH) {
+                  // Отправляем накопленный чанк
+                  if (currentChunk.trim()) {
+                    await client.sendMessage(message.peerId, {
+                      message: currentChunk.trim(),
+                      parseMode: 'html'
+                    });
+                  }
+                  currentChunk = section;
+                } else {
+                  currentChunk += (currentChunk ? '\n\n' : '') + section;
+                }
+              }
+              
+              // Отправляем последний чанк + футер
+              if (currentChunk.trim()) {
+                await client.sendMessage(message.peerId, {
+                  message: currentChunk.trim() + footer,
+                  parseMode: 'html'
+                });
+              }
+            }
 
             // Сохраняем в лог
             const timestamp = new Date().toISOString();
