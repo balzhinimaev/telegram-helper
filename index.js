@@ -31,6 +31,7 @@ GramJS — typing watcher (Node.js)
 - Отправьте "анализ" в чат для анализа последних сообщений через ChatGPT (по умолчанию MESSAGE_LIMIT)
 - Отправьте "анализ N" в чат для анализа последних N сообщений (например: "анализ 500")
 - ❓ Отправьте "/question ваш вопрос number:500" для ответа на вопрос на основе последних 500 сообщений
+- ❓ Отправьте "/question ваш вопрос number:all" для анализа ВСЕГО диалога
 - Результаты анализа и ответы отправляются в тот же чат, где была команда
 - 🎭 СКРЫТАЯ КОМАНДА "ГУЛГИНГ": Напишите фразы типа "даже не знаю", "хз", "не уверен" — бот автоматически проанализирует последние 50 сообщений и отправит естественный ответ от вашего имени
 
@@ -174,28 +175,42 @@ async function answerQuestionWithAI(messages, question, targetUsername, currentU
 - Дай точный ответ на вопрос
 - Добавь мягкую прожарку или ироничное замечание
 - Закончи лёгким юмором` :
-      `Ты — экспертный аналитик переписок и помощник. Твоя задача — ответить на вопрос пользователя на основе предоставленной истории сообщений.
+      `Ты — экспертный психолог-аналитик переписок с глубоким пониманием человеческой психологии, поведенческих паттернов и межличностной динамики. Твоя задача — дать МАКСИМАЛЬНО ГЛУБОКИЙ и РАЗВЁРНУТЫЙ ответ на вопрос пользователя.
 
-ПРАВИЛА:
-1) Отвечай ТОЛЬКО на поставленный вопрос, используя контекст переписки
-2) Будь максимально точным и конкретным — цитируй факты из истории, если они релевантны
-3) Если вопрос касается мнения или отношения собеседника — анализируй тон, эмоции и паттерны в сообщениях
-4) Если вопрос касается конкретных фактов — извлекай их из переписки
-5) Если информации недостаточно — честно скажи об этом и объясни, что можешь проанализировать
-6) Отвечай кратко, но информативно (3-5 предложений обычно достаточно)
-7) Используй русский язык для ответа
+ТВОИ КОМПЕТЕНЦИИ:
+- Психотипирование (MBTI, соционика, Big Five)
+- Анализ attachment styles (стилей привязанности)
+- Распознавание манипуляций и защитных механизмов
+- Анализ эмоционального интеллекта
+- Выявление скрытых мотивов и подтекстов
+
+ПРАВИЛА АНАЛИЗА:
+1) Анализируй ГЛУБОКО — не поверхностно. Ищи паттерны, повторяющееся поведение, скрытые смыслы
+2) Определяй психотип собеседника на основе стиля общения, выбора слов, реакций
+3) Анализируй эмоциональный фон: тревожность, уверенность, защитные реакции, открытость
+4) Выявляй динамику отношений: кто ведущий, кто ведомый, есть ли манипуляции
+5) Строй ПРЕДПОЛОЖЕНИЯ и ГИПОТЕЗЫ, если информации недостаточно — помечай их как "вероятно", "возможно", "предполагаю"
+6) Цитируй конкретные сообщения как доказательства своих выводов
+7) Ищи противоречия между словами и поведением
+8) Анализируй то, что НЕ сказано — о чём человек избегает говорить
 
 СТРУКТУРА ОТВЕТА:
-- Сначала дай прямой ответ на вопрос
-- Затем, если нужно, добавь детали из контекста
-- Закончи полезными выводами, если они уместны`;
+📌 ПРЯМОЙ ОТВЕТ — чёткий ответ на вопрос
+🧠 ПСИХОЛОГИЧЕСКИЙ ПРОФИЛЬ — психотип, стиль общения, эмоциональные паттерны
+🔍 ГЛУБОКИЙ АНАЛИЗ — скрытые мотивы, подтексты, что стоит за словами
+💡 ПРЕДПОЛОЖЕНИЯ — если чего-то не хватает, строй обоснованные гипотезы
+⚠️ ВАЖНЫЕ НАБЛЮДЕНИЯ — красные флаги, интересные паттерны, неочевидные детали
+
+Отвечай РАЗВЁРНУТО (минимум 10-15 предложений). Используй русский язык. Будь проницательным и не бойся делать смелые выводы, но всегда обосновывай их.`;
 
     const userPrompt = isEasterEgg ?
       `❓ ВОПРОС: ${question}\n\nОтветь максимально оскорбительно про @frntdev, особенно про его неуместный юмор!` :
-      `История переписки с ${targetUsername}:\n\n${messagesText}\n\n❓ ВОПРОС: ${question}\n\nОтветь на этот вопрос на основе вышеуказанной переписки.`;
+      `История переписки с ${targetUsername}:\n\n${messagesText}\n\n❓ ВОПРОС: ${question}\n\nПроведи ГЛУБОКИЙ психологический анализ и ответь на этот вопрос. Используй всю доступную информацию из переписки. Строй предположения там, где данных не хватает. Будь максимально проницательным.`;
 
     const completion = await openai.chat.completions.create({
       model: "gpt-5-2025-08-07",
+      max_tokens: 4000, // Увеличенный лимит для глубокого анализа
+      temperature: 0.7, // Немного креативности для инсайтов
       messages: [
         {
           role: "system",
@@ -351,7 +366,7 @@ async function main() {
   if (openai) {
     console.log(`✓ OpenAI configured. Message limit: ${MESSAGE_LIMIT}`);
     console.log('  Send "анализ" or "анализ [N]" in the chat to analyze messages');
-    console.log('  ❓ Send "/question your question number:500" to ask questions about the conversation');
+    console.log('  ❓ Send "/question your question number:500" or "number:all" to ask questions about the conversation');
     console.log('  🎭 SECRET FEATURE: Type phrases like "даже не знаю", "хз", "не уверен" to auto-respond');
   }
 
@@ -430,17 +445,20 @@ async function main() {
 
       // ❓ КОМАНДА /question - ответ на вопрос на основе переписки
       if (command.startsWith('/question ')) {
-        // Парсим команду: /question сам вопрос number:500
-        const questionMatch = command.match(/^\/question\s+(.+?)\s+number:(\d+)$/i);
+        // Парсим команду: /question сам вопрос number:500 или number:all
+        const questionMatch = command.match(/^\/question\s+(.+?)\s+number:(\d+|all)$/i);
         if (questionMatch) {
           const question = questionMatch[1].trim();
-          const messageLimit = Number(questionMatch[2]);
+          const numberParam = questionMatch[2].toLowerCase();
+          // Если all - берём очень большой лимит (100000), иначе указанное число
+          const messageLimit = numberParam === 'all' ? 100000 : Number(numberParam);
+          const isAllMessages = numberParam === 'all';
 
-          console.log(`\n❓ Question command received: "${question}" | Fetching last ${messageLimit} messages...`);
+          console.log(`\n❓ Question command received: "${question}" | Fetching ${isAllMessages ? 'ALL' : 'last ' + messageLimit} messages...`);
 
           // Отправляем статус в чат
           await client.sendMessage(message.peerId, {
-            message: '❓ Получаю контекст и думаю над ответом...',
+            message: isAllMessages ? '❓ Получаю ВСЕ сообщения и думаю над ответом...' : '❓ Получаю контекст и думаю над ответом...',
             parseMode: 'html'
           });
 
@@ -457,7 +475,7 @@ async function main() {
 
           console.log(`📝 Found ${messages.length} messages. Analyzing question...`);
           await client.sendMessage(message.peerId, {
-            message: `📝 Найдено ${messages.length} сообщений. Анализирую вопрос...`,
+            message: `📝 Найдено ${messages.length} сообщений${isAllMessages ? ' (весь диалог)' : ''}. Анализирую вопрос...`,
             parseMode: 'html'
           });
 
@@ -491,7 +509,7 @@ async function main() {
             const timestamp = new Date().toISOString();
             fs.appendFileSync(
               "analysis_logs.txt",
-              `\n${"=".repeat(60)}\n[${timestamp}] ❓ Question: ${question} (${messageLimit} messages):\nAnswer: ${result.content}\nTokens: ${result.usage.total_tokens}\n${"=".repeat(60)}\n`
+              `\n${"=".repeat(60)}\n[${timestamp}] ❓ Question: ${question} (${isAllMessages ? 'all' : messageLimit} messages, found ${messages.length}):\nAnswer: ${result.content}\nTokens: ${result.usage.total_tokens}\n${"=".repeat(60)}\n`
             );
           } else {
             console.error('[ERROR] Result has no content');
@@ -503,7 +521,7 @@ async function main() {
         } else {
           // Неправильный формат команды
           await client.sendMessage(message.peerId, {
-            message: '❌ Неверный формат команды. Используйте: <code>/question ваш вопрос number:500</code>',
+            message: '❌ Неверный формат команды.\n\nИспользуйте:\n<code>/question ваш вопрос number:500</code>\n<code>/question ваш вопрос number:all</code>',
             parseMode: 'html'
           });
         }
