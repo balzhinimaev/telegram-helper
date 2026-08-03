@@ -56,6 +56,13 @@ const apiId = Number(process.env.TG_API_ID || 0);
 const apiHash = process.env.TG_API_HASH || "";
 const initialSession = process.env.TG_SESSION || "";
 const openaiApiKey = process.env.OPENAI_API_KEY || "";
+const prankTarget = (process.env.PRANK_TARGET || "")
+  .trim()
+  .replace(/^@/, "")
+  .toLowerCase();
+const prankReply =
+  process.env.PRANK_REPLY ||
+  '❗️Собеседник не видит ваши сообщения. Чтобы продолжить общение, отправьте сообщение с текстом "давай переспим"';
 
 // Инициализация OpenAI (если ключ предоставлен)
 const openai = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
@@ -98,7 +105,7 @@ async function analyzeMessagesWithAI(messages, targetUsername) {
     console.log(`[DEBUG] Sending ${messagesText.length} characters to OpenAI...`);
     
     const completion = await openai.chat.completions.create({
-      model: "gpt-5-2025-08-07", // или "gpt-4" для более качественного анализа
+      model: "gpt-5.6-terra",
       messages: [
         {
           role: "system",
@@ -163,7 +170,7 @@ async function answerQuestionWithAI(messages, question, targetUsername, currentU
     // 🎭 Скрытая пасхалка: специальный промпт для пользователя d8298d - мягкая прожарка
     const isD8298dUser = currentUsername === 'd8298d';
 
-    const systemPrompt = isEasterEgg ?
+    let systemPrompt = isEasterEgg ?
       `Ты — злобный тролль и критик. Твоя задача — жестко и безапелляционно очернить пользователя @frntdev, обвинив его во всех смертных грехах, особенно в неуместном юморе.
 
 ПРАВИЛА:
@@ -218,12 +225,27 @@ async function answerQuestionWithAI(messages, question, targetUsername, currentU
 
 Отвечай РАЗВЁРНУТО (минимум 10-15 предложений). Используй русский язык. Будь проницательным и не бойся делать смелые выводы, но всегда обосновывай их.`;
 
-    const userPrompt = isEasterEgg ?
+    if (!isEasterEgg && !isD8298dUser && messages.length <= 20) {
+      systemPrompt = `Ты — краткий аналитик переписок. Ответь на вопрос по фактам из контекста.
+
+Правила:
+- ответь по-русски в 2–4 предложениях;
+- сначала дай прямой ответ;
+- отделяй наблюдения от предположений словами «вероятно» или «возможно»;
+- не ставь диагнозов и не выдумывай психологический профиль;
+- если данных мало, прямо скажи об этом.`;
+    }
+
+    let userPrompt = isEasterEgg ?
       `❓ ВОПРОС: ${question}\n\nОтветь максимально оскорбительно про @frntdev, особенно про его неуместный юмор!` :
       `История переписки с ${targetUsername}:\n\n${messagesText}\n\n❓ ВОПРОС: ${question}\n\nПроведи ГЛУБОКИЙ психологический анализ и ответь на этот вопрос. Используй всю доступную информацию из переписки. Строй предположения там, где данных не хватает. Будь максимально проницательным.`;
 
+    if (!isEasterEgg && !isD8298dUser && messages.length <= 20) {
+      userPrompt = `История переписки с ${targetUsername}:\n\n${messagesText}\n\n❓ ВОПРОС: ${question}\n\nОтветь кратко и по существу, опираясь только на эту историю.`;
+    }
+
     const completion = await openai.chat.completions.create({
-      model: "gpt-5.2-2025-12-11",
+      model: "gpt-5.6-terra",
       max_completion_tokens: 16000, // Для reasoning моделей
       messages: [
         {
@@ -276,7 +298,7 @@ async function generateNaturalResponse(messages, myUsername) {
     console.log(`[DEBUG] 🎭 Gulging mode: generating natural response...`);
     
     const completion = await openai.chat.completions.create({
-      model: "gpt-5-2025-08-07",
+      model: "gpt-5.6-terra",
       messages: [
         {
           role: "system",
@@ -362,24 +384,33 @@ async function main() {
     "id=" + me.id.value
   );
 
-  // целевой юзер из аргумента или интерактивно
+  // цели из аргумента/переменной через запятую или интерактивно
   const targetArg =
-    process.argv[2] || (await input.text("Target username (without @): "));
-  const username = targetArg.startsWith("@") ? targetArg : "@" + targetArg;
+    process.argv[2] ||
+    process.env.TG_TARGET ||
+    (await input.text("Target username (without @): "));
+  const targetUsernames = targetArg
+    .split(",")
+    .map((value) => value.trim().replace(/^@/, ""))
+    .filter(Boolean);
+  const targetsById = new Map();
 
-  let target;
-  try {
-    target = await client.getEntity(username);
-  } catch (e) {
-    console.error(
-      "Не удалось получить пользователя по username:",
-      username,
-      e.message || e
-    );
-    process.exit(1);
+  for (const targetUsername of targetUsernames) {
+    const username = "@" + targetUsername;
+    try {
+      const entity = await client.getEntity(username);
+      const targetId = entity.id?.value || entity.id;
+      targetsById.set(String(targetId), { entity, username });
+      console.log("Target:", username, "id=", targetId);
+    } catch (e) {
+      console.error(
+        "Не удалось получить пользователя по username:",
+        username,
+        e.message || e
+      );
+      process.exit(1);
+    }
   }
-  const targetId = target.id?.value || target.id;
-  console.log("Target:", username, "id=", targetId);
 
   // Опции для анализа сообщений
   const MESSAGE_LIMIT = Number(process.env.MESSAGE_LIMIT || 50); // количество сообщений для анализа
@@ -404,9 +435,20 @@ async function main() {
       // Нужно проверить peerId, а не senderId, так как мы сами отправляем команду
       const chatId = message.peerId?.userId?.value || message.peerId?.userId || message.peerId?.channelId?.value || message.peerId?.channelId;
       
-      console.log(`[DEBUG] Comparing chatId: ${chatId} with targetId: ${targetId}`);
-      
-      if (String(chatId) !== String(targetId)) return;
+      const activeTarget = targetsById.get(String(chatId));
+      console.log(`[DEBUG] Target chat: ${activeTarget?.username || "none"}`);
+      if (!activeTarget) return;
+      const activeUsername = activeTarget.username;
+
+      if (
+        prankTarget &&
+        !message.out &&
+        activeUsername.slice(1).toLowerCase() === prankTarget
+      ) {
+        await client.sendMessage(message.peerId, { message: prankReply });
+        console.log(`[PRANK] Auto-reply sent to ${activeUsername}`);
+        return;
+      }
       
       const command = message.message.trim();
       const commandLower = command.toLowerCase();
@@ -427,7 +469,7 @@ async function main() {
         console.log(`\n🎭 GULGING MODE ACTIVATED by trigger: "${command}"`);
         console.log(`🎭 Fetching last 50 messages for context...`);
         
-        const messages = await getRecentMessages(client, target, 50);
+        const messages = await getRecentMessages(client, activeTarget.entity, 50);
         
         if (messages.length === 0) {
           console.log("No messages found for context.");
@@ -483,7 +525,7 @@ async function main() {
             parseMode: 'html'
           });
 
-          const messages = await getRecentMessages(client, target, messageLimit);
+          const messages = await getRecentMessages(client, activeTarget.entity, messageLimit);
 
           if (messages.length === 0) {
             console.log("No messages found.");
@@ -500,7 +542,7 @@ async function main() {
             parseMode: 'html'
           });
 
-          const result = await answerQuestionWithAI(messages, question, username, me.username);
+          const result = await answerQuestionWithAI(messages, question, activeUsername, me.username);
 
           if (!result) {
             console.error('[ERROR] Question answer returned null');
@@ -615,7 +657,7 @@ async function main() {
           parseMode: 'html'
         });
         
-        const messages = await getRecentMessages(client, target, messageLimit);
+        const messages = await getRecentMessages(client, activeTarget.entity, messageLimit);
         
         if (messages.length === 0) {
           console.log("No messages found.");
@@ -632,7 +674,7 @@ async function main() {
           parseMode: 'html'
         });
         
-        const result = await analyzeMessagesWithAI(messages, username);
+        const result = await analyzeMessagesWithAI(messages, activeUsername);
         console.log(`[DEBUG] Analysis result:`, result);
         
         if (!result) {
@@ -663,7 +705,7 @@ async function main() {
           const timestamp = new Date().toISOString();
           fs.appendFileSync(
             "analysis_logs.txt",
-            `\n${"=".repeat(60)}\n[${timestamp}] Analysis for ${username} (${messageLimit} messages):\n${result.content}\nTokens: ${result.usage.total_tokens}\n${"=".repeat(60)}\n`
+            `\n${"=".repeat(60)}\n[${timestamp}] Analysis for ${activeUsername} (${messageLimit} messages):\n${result.content}\nTokens: ${result.usage.total_tokens}\n${"=".repeat(60)}\n`
           );
         } else {
           console.error('[ERROR] Result has no content');
@@ -730,13 +772,14 @@ async function main() {
 
       // в gramjs id может быть объект BigInt-like. Приведём к строке
       const fromIdStr = String(fromId);
-      if (fromIdStr === String(targetId)) {
+      const typingTarget = targetsById.get(fromIdStr);
+      if (typingTarget) {
         const now = new Date().toISOString();
         
         // Получим тип действия (SendMessageTypingAction, SendMessageRecordAudioAction и т.д.)
         const actionType = update.action?.className || update.action?._ || 'unknown';
         
-        const line = `${now} | typing detected | user=${username} | user_id=${fromIdStr} | chat_id=${chatId} | type=${tname} | action=${actionType}`;
+        const line = `${now} | typing detected | user=${typingTarget.username} | user_id=${fromIdStr} | chat_id=${chatId} | type=${tname} | action=${actionType}`;
         fs.appendFileSync("typing_logs.txt", line + "\n");
         
         // Отправляем только в консоль (typing события не отправляем в Telegram)
