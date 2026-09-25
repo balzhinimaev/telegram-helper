@@ -114,3 +114,12 @@ temp/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Private Telegram authentication
+.telegram-session
+
+.analysis-cache/
+
+.private-backups/
+
+.telegram-session*
