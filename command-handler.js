@@ -94,7 +94,12 @@ export function createCommandHandler({ client, meId, analyzer, state, targetIds 
       const code = String(error?.code || error?.name || 'ANALYSIS_ERROR').replace(/[^A-Z_a-z0-9-]/g, '').slice(0,70);
       console.error(`Analysis failed: ${code}`);
       const notice = errorNotice(error);
-      status({ stage: 'ready', lastError: code });
+      status({ stage: 'ready', lastError: code,
+        lastErrorReason: ['quote_format', 'quote_not_in_original', 'quote_not_in_context'].includes(error?.details?.reason) ? error.details.reason : null,
+        lastErrorStage: ['map', 'merge', 'report'].includes(error?.details?.stage) ? error.details.stage : null,
+        lastCostUSD: Number(error?.details?.cost || 0),
+        lastAPICalls: Number(error?.details?.usage?.calls || 0),
+      });
       // If even the acknowledgement failed, another send will usually fail too
       // (or duplicate a send with an ambiguous network result). Keep diagnostics.
       if (progressMessage) await progress(notice, true);

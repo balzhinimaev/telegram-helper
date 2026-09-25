@@ -54,6 +54,10 @@ test('reports all senders with checked IDs/dates and no hidden retries; final re
     assert(call.options.timeout > 0);
     assert(call.params.max_completion_tokens > 0);
     assert.equal(call.params.response_format.json_schema.strict, true);
+    if (call.kind === 'map') assert.deepEqual(
+      call.params.response_format.json_schema.schema.properties.observations.items.properties.evidence.items.properties.id.enum,
+      [...new Set(call.payload.messages.map(message => message.id))],
+    );
   }
   const repeat = await analyzer.analyze(args);
   assert.equal(repeat.cacheHit, true);
@@ -116,9 +120,22 @@ test('append reuses unchanged earlier chunks', async t => {
 test('map refuses fabricated references and stores no completed result', async t => {
   const ai = fakeAI(({ result, response }) => { result.observations[0].evidence = [{ id: '999', quote: 'выдумка' }]; response.choices[0].message.content = JSON.stringify(result); return response; });
   const { analyzer, directory } = await setup(t, {}, ai);
-  await assert.rejects(analyzer.analyze({ chatId: 'references', messages: [record(1, 'Фактический текст')] }), error => error.code === 'EVIDENCE' && error.details.usage.calls === 1 && error.details.cost > 0);
+  await assert.rejects(analyzer.analyze({ chatId: 'references', messages: [record(1, 'Фактический текст')] }), error => error.code === 'EVIDENCE' && error.details.stage === 'map' && error.details.reason === 'quote_not_in_original' && error.details.usage.calls === 1 && error.details.cost > 0);
   const [subdirectory] = await fs.readdir(directory);
   assert.equal((await fs.readdir(path.join(directory, subdirectory))).length, 0);
+});
+
+test('whitespace-only copied quotations restore exact originals through summary and final report', async t => {
+  const ai = fakeAI(({ result, response }) => {
+    const observations = result.observations || [...result.participants, ...result.sections, result.verdict];
+    for (const item of observations) for (const ref of item.evidence) ref.quote = ref.quote.replace(/\s+/gu, ' ');
+    response.choices[0].message.content = JSON.stringify(result);
+    return response;
+  });
+  const { analyzer } = await setup(t, {}, ai);
+  const result = await analyzer.analyze({chatId:'whitespace',messages:[record(1,'Да,\nя\tхочу встретиться.')]});
+  assert.match(result.content, /«Да,\nя\tхочу встретиться\.»/u);
+  assert.equal(result.usage.calls, 2);
 });
 
 test('final cannot invent a real quote that was not retained in its supplied summaries', async t => {

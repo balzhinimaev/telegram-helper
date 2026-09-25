@@ -13,6 +13,6 @@
   "scripts": {
     "start": "node index.js",
     "test": "node --test tests/*.test.js",
-    "check": "node --check index.js && node --check command-handler.js && node --check chat-peer.js && node --check analysis-engine.js && node --check telegram-commands.js"
+    "check": "node --check index.js && node --check command-handler.js && node --check chat-peer.js && node --check analysis-engine.js && node --check evidence-repair.js && node --check telegram-commands.js"
   }
 }

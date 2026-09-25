@@ -3,9 +3,10 @@ import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { encode } from 'gpt-tokenizer/encoding/o200k_base';
+import { restoreEvidenceWhitespace } from './evidence-repair.js';
 
 // Increment whenever prompts, evidence handling or the report contract change.
-export const PROMPT_VERSION = 'dialogue-evidence-v3';
+export const PROMPT_VERSION = 'dialogue-evidence-v4';
 const PRICES = Object.freeze({ 'gpt-4.1-mini': { input: 0.4, output: 1.6 } });
 const tokenCount = value => encode(typeof value === 'string' ? value : JSON.stringify(value)).length;
 const digest = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
@@ -144,6 +145,8 @@ function validate(result, kind, segments, inheritedEvidence, senders) {
     if (result.participants.length !== senders.size || new Set(result.participants.map(item => item.sender)).size !== senders.size || result.participants.some(item => !senders.has(item.sender))) throw new AnalysisError('EVIDENCE', 'В отчёте пропущен или добавлен участник. Непроверенный результат не отправлен.');
   } else if (typeof result.summary !== 'string' || !Array.isArray(result.observations) || !result.observations.every(validObservation) || !isStringArray(result.gaps)) throw new AnalysisError('RESPONSE', 'Модель вернула неполную часть анализа. Готовые части сохранены.');
   for (const evidence of allEvidence(result)) {
+    const restored = restoreEvidenceWhitespace(evidence, segments, inheritedEvidence ?? null);
+    if (restored !== evidence) evidence.quote = restored.quote;
     const reason = !evidence || typeof evidence.id !== 'string' || typeof evidence.quote !== 'string' || !evidence.quote.trim() || Array.from(evidence.quote).length > 180
       ? 'quote_format'
       : !segments.some(message => message.id === evidence.id && message.text.includes(evidence.quote))
@@ -157,8 +160,8 @@ function validate(result, kind, segments, inheritedEvidence, senders) {
   return result;
 }
 
-function outputSchema(kind, senderIds = []) {
-  const schema = kind === 'report' ? {
+function outputSchema(kind, senderIds = [], evidenceIds = []) {
+  let schema = kind === 'report' ? {
     ...REPORT,
     properties: {
       ...REPORT.properties,
@@ -171,9 +174,12 @@ function outputSchema(kind, senderIds = []) {
       },
     },
   } : SUMMARY;
+  if (kind === 'map' && evidenceIds.length) {
+    schema = { ...SUMMARY, properties: { ...SUMMARY.properties, observations: { ...SUMMARY.properties.observations, items: { ...OBSERVATION, properties: { ...OBSERVATION.properties, evidence: { ...OBSERVATION.properties.evidence, items: { ...EVIDENCE, properties: { ...EVIDENCE.properties, id: { type: 'string', enum: [...new Set(evidenceIds)] } } } } } } } } };
+  }
   return { type: 'json_schema', json_schema: { name: kind === 'report' ? 'dialogue_report' : 'dialogue_summary', strict: true, schema } };
 }
-function inputEstimate(system, payload, kind, senderIds = []) { return tokenCount(system) + tokenCount(payload) + tokenCount(outputSchema(kind, senderIds)) + 256; }
+function inputEstimate(system, payload, kind, senderIds = []) { return tokenCount(system) + tokenCount(payload) + tokenCount(outputSchema(kind, senderIds, payload.messages?.map(message => message.id) || [])) + 256; }
 
 async function privateDirectory(directory) {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -311,7 +317,7 @@ export function createAnalyzer({ openai, config = loadAnalysisConfig() } = {}) {
           if (input > cfg.maxInputTokens || usage.totalTokens + input + node.limit > cfg.maxTotalTokens || spent + reserveCost > cfg.maxCostUSD) throw new AnalysisError('BUDGET', 'Достигнут лимит анализа. Следующий запрос не отправлен; готовые части сохранены, история не обрезана.');
           let completion;
           try {
-            completion = await openai.chat.completions.create({ model: cfg.model, temperature: 0.2, store: false, max_completion_tokens: node.limit, response_format: outputSchema(node.kind, senders), messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(payload) }] }, { maxRetries: 0, timeout: cfg.timeoutMs });
+            completion = await openai.chat.completions.create({ model: cfg.model, temperature: 0.2, store: false, max_completion_tokens: node.limit, response_format: outputSchema(node.kind, senders, node.kind === 'map' ? node.segments.map(message => message.id) : []), messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(payload) }] }, { maxRetries: 0, timeout: cfg.timeoutMs });
           } catch (error) { throw new AnalysisError('API', safeError(error), { usage: { ...usage }, cost: spent, failedRequestMayBeBilled: true }); }
           const actualInput = completion.usage?.prompt_tokens;
           const actualOutput = completion.usage?.completion_tokens;
@@ -327,7 +333,11 @@ export function createAnalyzer({ openai, config = loadAnalysisConfig() } = {}) {
           let result;
           try { result = JSON.parse(choice.message.content); } catch { throw new AnalysisError('RESPONSE', 'Ответ модели не удалось проверить. Неполный отчёт не отправлен.', { usage: { ...usage }, cost: spent }); }
           const inherited = node.children ? node.children.flatMap(child => allEvidence(child.cache.result)) : null;
-          validate(result, node.kind, node.segments, inherited, senders);
+          try { validate(result, node.kind, node.segments, inherited, senders); }
+          catch (error) {
+            if (error instanceof AnalysisError) error.details = { ...error.details, stage: node.kind };
+            throw error;
+          }
           if (tokenCount(result) > node.limit + 128) throw new AnalysisError('RESPONSE', 'Ответ превысил допустимый размер. Дальнейшие запросы остановлены.');
           node.cache = { version: PROMPT_VERSION, key: node.key, result };
           await writeCache(node.file, node.cache);
