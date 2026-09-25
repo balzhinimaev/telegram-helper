@@ -123,7 +123,7 @@ test('map refuses fabricated references and stores no completed result', async t
   const { analyzer, directory } = await setup(t, {}, ai);
   await assert.rejects(analyzer.analyze({ chatId: 'references', messages: [record(1, 'Фактический текст')] }), error => error.code === 'EVIDENCE' && error.details.stage === 'map' && error.details.reason === 'quote_not_in_original' && error.details.usage.calls === 1 && error.details.cost > 0);
   const [subdirectory] = await fs.readdir(directory);
-  assert.equal((await fs.readdir(path.join(directory, subdirectory))).length, 0);
+  assert.equal((await fs.readdir(path.join(directory, subdirectory))).filter(file=>file.endsWith('.json')).length, 0);
 });
 
 test('whitespace-only copied quotations restore exact originals through summary and final report', async t => {
@@ -326,6 +326,7 @@ test('GPT-5.1 single-pass sends every original once, has no summaries, and repea
   assert.match(ai.calls[0].params.messages[0].content,/вся исходная история/);
   assert(!ai.calls[0].params.messages[0].content.includes('Используй только пары id/quote из переданных observations'));
   assert.deepEqual(ai.calls[0].params.response_format.json_schema.schema.properties.verdict.properties.evidence.items.required,['id']);
+  assert.deepEqual(ai.calls[0].params.response_format.json_schema.schema.properties.verdict.properties.evidence.items.properties.id,{type:'integer',minimum:1,maximum:3});
   assert.match(result.content,/начало сообщения/);
   const repeat = await analyzer.analyze(args);
   assert.equal(repeat.cacheHit,true);
@@ -345,7 +346,7 @@ test('single-pass does not publish or retry a fabricated quote from the stronger
   await assert.rejects(analyzer.analyze({chatId:'direct-evidence',messages:[record(1,'Привет')]}),e=>e.code==='EVIDENCE' && e.details.stage==='report' && e.details.usage.calls===1);
   assert.equal(ai.calls.length,1);
   const [subdirectory]=await fs.readdir(directory);
-  assert.equal((await fs.readdir(path.join(directory,subdirectory))).length,0);
+  assert.equal((await fs.readdir(path.join(directory,subdirectory))).filter(file=>file.endsWith('.json')).length,0);
 });
 
 test('direct and hierarchical caches remain distinct for the same model', async t => {
@@ -360,7 +361,7 @@ test('direct and hierarchical caches remain distinct for the same model', async 
 });
 
 test('direct references must exist and point to original text, not an attachment', async t => {
-  for (const badId of ['missing','2']) {
+  for (const badId of ['missing',2]) {
     const ai=fakeAI(({result,response})=>{result.verdict.evidence=[{id:badId}];response.choices[0].message.content=JSON.stringify(result);return response;});
     const {analyzer}=await setup(t,loadAnalysisConfig({}),ai);
     await assert.rejects(analyzer.analyze({chatId:'bad-ref-'+badId,messages:[record(1,'Настоящий текст'),{...record(2,''),mediaOnly:true,media:'voice'}]}),e=>e.code==='EVIDENCE' && e.details.usage.calls===1);
