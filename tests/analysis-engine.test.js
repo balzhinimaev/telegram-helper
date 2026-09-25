@@ -25,6 +25,7 @@ function fakeAI(customize) {
         verdict: { claim: 'Общение можно продолжить, если цель — знакомство; формат стоит спокойно уточнить.', uncertainty: 'Долгосрочные ожидания не известны.', evidence },
         nextSteps: ['Спросить о взаимных ожиданиях.'], limitations: ['Только текст; большие диалоги сжаты по частям.'],
       } : { summary: 'Обсуждаются планы.', observations: [{ claim: 'В тексте есть обсуждение.', uncertainty: 'Нет доказательства намерений.', evidence }], gaps: ['Содержимое медиа неизвестно.'] };
+      if (payload.statistics && payload.messages) for (const item of [...result.participants,...result.sections,result.verdict]) item.evidence=item.evidence.map(ref=>({id:ref.id}));
       let response = { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }], usage: { prompt_tokens: 100, completion_tokens: encode(JSON.stringify(result)).length } };
       return customize ? (await customize({ params, options, payload, kind, result, response, calls })) ?? response : response;
     } } },
@@ -324,6 +325,8 @@ test('GPT-5.1 single-pass sends every original once, has no summaries, and repea
   assert.equal(result.cost,(result.usage.inputTokens*1.25+result.usage.outputTokens*10)/1e6);
   assert.match(ai.calls[0].params.messages[0].content,/вся исходная история/);
   assert(!ai.calls[0].params.messages[0].content.includes('Используй только пары id/quote из переданных observations'));
+  assert.deepEqual(ai.calls[0].params.response_format.json_schema.schema.properties.verdict.properties.evidence.items.required,['id']);
+  assert.match(result.content,/начало сообщения/);
   const repeat = await analyzer.analyze(args);
   assert.equal(repeat.cacheHit,true);
   assert.equal(repeat.cost,0);
