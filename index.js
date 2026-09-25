@@ -59,7 +59,7 @@ async function main() {
   const config = loadAnalysisConfig(process.env);
   const initialSession = process.env.TG_SESSION || (fs.existsSync(sessionFile) ? fs.readFileSync(sessionFile, 'utf8').trim() : '');
   acquireLock();
-  runtime = { pid: process.pid, version: 'superanalysis-1', startedAt: new Date().toISOString(), model: config.model, stage: 'connecting' };
+  runtime = { pid: process.pid, version: 'superanalysis-2', startedAt: new Date().toISOString(), model: config.model, stage: 'connecting' };
   updateStatus({});
   client = new TelegramClient(new StringSession(initialSession), apiId, apiHash, { connectionRetries: 5, floodSleepThreshold: 30 });
   client.setLogLevel('error');
@@ -90,7 +90,11 @@ async function main() {
     status: updateStatus,
   });
   client.addEventHandler(async event => {
-    try { await handler(event); } catch (error) { console.error(`Telegram delivery: ${codeOf(error)}`); }
+    try { await handler(event); } catch (error) {
+      const code = codeOf(error);
+      updateStatus({ lastDeliveryError: code });
+      console.error(`Telegram delivery: ${code}`);
+    }
   }, new NewMessage({ outgoing: true }));
   updateStatus({ stage: 'ready', authenticated: true, aiConfigured: Boolean(openai), targetMode: targetIds.size ? 'selected_private_chats' : 'all_owner_private_chats' });
   console.log(`Telegram Helper ready. Model: ${config.model}. Commands: суперанализ | анализ 50 | /question ... | /analysis_help`);

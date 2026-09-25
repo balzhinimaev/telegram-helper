@@ -19,6 +19,7 @@ function setup(t, options = {}) {
   const client = {
     sent: [], edits: [], historyCalls: [], counter: 1000,
     items: options.items ?? [record(3), record(2), record(1)],
+    async getInputEntity(peer) { return peer; },
     async sendMessage(peer, args) {
       const sent = { id: this.counter++, peer, ...args };
       this.sent.push(sent);
@@ -254,4 +255,109 @@ test('help and missing AI configuration do not load private histories or call AI
   await missing.handler(event());
   assert.equal(missing.client.historyCalls.length, 0);
   assert.match(missing.client.sent[0].message, /OPENAI_API_KEY/u);
+});
+
+test('cold short updates reuse one resolved InputPeerUser for acknowledgement, history, report, and edits', async t => {
+  const resolved = { className: 'InputPeerUser', userId: 2n, accessHash: 987654321n };
+  let resolutions = 0;
+  const env = setup(t, { analyze: async ({ onProgress }) => {
+    await onProgress({ stage: 'summarize', completed: 1, total: 2 });
+    return analysisResult({ content: 'Подробный вывод. '.repeat(600) });
+  } });
+  env.client.getInputEntity = () => assert.fail('hydrated event peer should be reused');
+  const update = event(10, 'суперанализ', { senderId: undefined });
+  update.getInputChat = async () => { resolutions++; return resolved; };
+  await env.handler(update);
+  await env.handler(update);
+
+  assert.equal(resolutions, 1);
+  assert.equal(env.calls.length, 1);
+  assert.equal(env.calls[0].chatId, '2', 'persistent analysis identity stays the numeric chat ID');
+  assert.equal(env.client.historyCalls.length, 1);
+  assert.equal(env.client.historyCalls[0].peer, resolved);
+  assert.ok(env.client.sent.length > 2, 'exercise multiple report parts');
+  assert.ok(env.client.edits.length >= 2, 'exercise both processing and final status');
+  for (const call of [...env.client.sent, ...env.client.edits]) assert.equal(call.peer, resolved);
+  const restored = new DeliveryState(env.stateFile);
+  assert.equal(restored.has('2', 10), true);
+  for (const sent of env.client.sent) assert.ok(restored.excluded('2').has(sent.id));
+});
+
+test('failed acknowledgement records a safe error without fetching history, billing, or resending', async t => {
+  t.mock.method(console, 'error', () => {});
+  const env = setup(t);
+  const originalSend = env.client.sendMessage.bind(env.client);
+  let sendAttempts = 0;
+  env.client.sendMessage = async () => {
+    sendAttempts++;
+    throw Object.assign(new Error('private ack failure'), { code: 'ACK_FAILED' });
+  };
+  await env.handler(event());
+  await env.handler(event());
+  assert.equal(sendAttempts, 1, 'no second send on an ambiguous acknowledgement failure or duplicate');
+  assert.equal(env.client.historyCalls.length, 0);
+  assert.equal(env.calls.length, 0);
+  assert.equal(env.client.edits.length, 0);
+  assert.ok(env.statuses.some(info => info.lastError === 'ACK_FAILED'));
+  assert.equal(env.statuses.at(-1).stage, 'ready');
+  assert.ok(!JSON.stringify(env.statuses).includes('private ack failure'));
+
+  const persisted = new DeliveryState(env.stateFile);
+  assert.equal(persisted.has('2', 10), true);
+  const restarted = createCommandHandler({ client: env.client, state: persisted, meId: '1', analyzer: {
+    analyze() { assert.fail('failed duplicate must not be analyzed after restart'); },
+  } });
+  await restarted(event());
+  assert.equal(sendAttempts, 1);
+  env.client.sendMessage = originalSend;
+  await env.handler(event(11));
+  assert.equal(env.calls.length, 1, 'a new command may proceed after the failed acknowledgement');
+});
+
+test('unresolvable command chat fails before any send, history load, or OpenAI request', async t => {
+  t.mock.method(console, 'error', () => {});
+  const env = setup(t);
+  let resolutions = 0;
+  env.client.getInputEntity = async () => { resolutions++; throw new Error('private missing peer'); };
+  env.client.iterDialogs = async function* () { yield { id: 3n, inputEntity: { userId: 3n } }; };
+  await env.handler(event());
+  await env.handler(event());
+  assert.equal(resolutions, 1);
+  assert.equal(env.client.sent.length, 0);
+  assert.equal(env.client.edits.length, 0);
+  assert.equal(env.client.historyCalls.length, 0);
+  assert.equal(env.calls.length, 0);
+  assert.ok(env.statuses.some(info => info.lastError === 'CHAT_RESOLUTION_FAILED'));
+  assert.equal(env.statuses.at(-1).stage, 'ready');
+  assert.equal(new DeliveryState(env.stateFile).has('2', 10), true);
+});
+
+test('help and busy notices also target the resolved peer without analyzing a second chat', async t => {
+  const help = setup(t);
+  const resolved = { className: 'InputPeerUser', userId: 2n, accessHash: 123n };
+  const helpEvent = event(10, '/analysis_help');
+  helpEvent.getInputChat = async () => resolved;
+  await help.handler(helpEvent);
+  assert.equal(help.client.sent[0].peer, resolved);
+  assert.equal(help.calls.length, 0);
+
+  let release;
+  let entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const busy = setup(t, { analyze: async () => { entered(); return new Promise(resolve => { release = resolve; }); } });
+  const first = busy.handler(event());
+  await started;
+  const secondPeer = { className: 'InputPeerUser', userId: 3n, accessHash: 456n };
+  const secondEvent = event(11, 'суперанализ', { peerId: { userId: 3n } });
+  secondEvent.getInputChat = async () => secondPeer;
+  try {
+    await busy.handler(secondEvent);
+    assert.equal(busy.client.sent.at(-1).peer, secondPeer);
+    assert.match(busy.client.sent.at(-1).message, /Уже выполняется/u);
+    assert.equal(busy.calls.length, 1);
+    assert.equal(busy.client.historyCalls.length, 1);
+  } finally {
+    release(analysisResult());
+    await first;
+  }
 });

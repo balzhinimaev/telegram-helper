@@ -1,5 +1,6 @@
 import { parseCommand, collectHistory, splitPlainText, ANALYSIS_MARKER } from './telegram-commands.js';
 import { AnalysisError, safeError } from './analysis-engine.js';
+import { resolvePrivatePeer } from './chat-peer.js';
 
 export const HELP = `Команды (отправляй сам в нужный личный чат):
 суперанализ — вся доступная история, глубокий разбор участников и перспектив.
@@ -37,8 +38,10 @@ export function createCommandHandler({ client, meId, analyzer, state, targetIds 
     const command = parseCommand(message.message);
     if (!command || state.has(chat, message.id)) return;
     state.remember('handled', chat, message.id);
+    let inputPeer;
+    const getPeer = async () => inputPeer ||= await resolvePrivatePeer(client, event, meId);
     const send = async text => {
-      const sent = await client.sendMessage(message.peerId, { message: `${ANALYSIS_MARKER}\n${text}`, parseMode: false, linkPreview: false });
+      const sent = await client.sendMessage(await getPeer(), { message: `${ANALYSIS_MARKER}\n${text}`, parseMode: false, linkPreview: false });
       state.remember('sent', chat, sent.id);
       return sent;
     };
@@ -50,13 +53,13 @@ export function createCommandHandler({ client, meId, analyzer, state, targetIds 
     const progress = async (text, force = false) => {
       if (!progressMessage || (!force && Date.now() - lastEdit < 12000)) return;
       lastEdit = Date.now();
-      try { await client.editMessage(message.peerId, { message: progressMessage.id, text: `${ANALYSIS_MARKER}\n${text}`, parseMode: false, linkPreview: false }); } catch { /* Progress never breaks analysis or triggers retries. */ }
+      try { await client.editMessage(await getPeer(), { message: progressMessage.id, text: `${ANALYSIS_MARKER}\n${text}`, parseMode: false, linkPreview: false }); } catch { /* Progress never breaks analysis or triggers retries. */ }
     };
     try {
       if (!analyzer) { await send('Для анализа нужен OPENAI_API_KEY в .env на сервере.'); return; }
       status({ stage: 'history' });
       progressMessage = await send('Получаю историю до этой команды. Проверю объём и бюджет до обращения к AI.');
-      const history = await collectHistory(client, message.peerId, {
+      const history = await collectHistory(client, await getPeer(), {
         beforeId: message.id, limit: command.limit ?? defaultLimit, ownerId: String(meId),
         excludeIds: state.excluded(chat), maxMessages,
         signal: AbortSignal.timeout(5 * 60 * 1000),
@@ -91,8 +94,10 @@ export function createCommandHandler({ client, meId, analyzer, state, targetIds 
       const code = String(error?.code || error?.name || 'ANALYSIS_ERROR').replace(/[^A-Z_a-z0-9-]/g, '').slice(0,70);
       console.error(`Analysis failed: ${code}`);
       const notice = errorNotice(error);
-      if (progressMessage) await progress(notice, true); else await send(notice);
       status({ stage: 'ready', lastError: code });
+      // If even the acknowledgement failed, another send will usually fail too
+      // (or duplicate a send with an ambiguous network result). Keep diagnostics.
+      if (progressMessage) await progress(notice, true);
     } finally { active = false; status({ stage: 'ready' }); }
   };
 }
