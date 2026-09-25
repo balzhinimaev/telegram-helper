@@ -13,7 +13,7 @@ function fakeAI(customize) {
     calls,
     chat: { completions: { create: async (params, options) => {
       const payload = JSON.parse(params.messages[1].content);
-      const kind = payload.messages ? 'map' : payload.statistics ? 'report' : 'merge';
+      const kind = payload.statistics ? 'report' : payload.messages ? 'map' : 'merge';
       calls.push({ params, options, payload, kind });
       const evidence = payload.messages
         ? payload.messages.filter(message => message.text).slice(0, 1).map(message => ({ id: message.id, quote: Array.from(message.text).slice(0, 30).join('') }))
@@ -33,7 +33,7 @@ function fakeAI(customize) {
 async function setup(t, overrides = {}, mock = fakeAI()) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dialog-analysis-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const config = { ...loadAnalysisConfig({}), cacheDir: directory, ...overrides };
+  const config = { ...loadAnalysisConfig({ANALYSIS_MODEL:'gpt-4.1-mini', ANALYSIS_STRATEGY:'hierarchical'}), ...overrides, cacheDir: directory };
   return { ai: mock, analyzer: createAnalyzer({ openai: mock, config }), config, directory };
 }
 
@@ -306,4 +306,52 @@ test('goal verdict evidence is checked against both source and inherited referen
   });
   const { analyzer } = await setup(t, {}, ai);
   await assert.rejects(analyzer.analyze({ chatId: 'verdict-evidence', messages: [record(1, 'Первая фраза'), record(2, 'Не переданная цитата')] }), error => error.code === 'EVIDENCE' && error.details.reason === 'quote_not_in_context');
+});
+
+test('GPT-5.1 single-pass sends every original once, has no summaries, and repeats from cache', async t => {
+  const { analyzer, ai } = await setup(t, loadAnalysisConfig({}));
+  const args = {chatId:'direct', ownerId:'100', messages:[record(1,'Начало. '.repeat(1500)),record(2,'Да, я хочу встретиться.','200'),record(3,'Конец.')]};
+  const result = await analyzer.analyze(args);
+  assert.equal(ai.calls.length, 1);
+  assert.equal(ai.calls[0].params.model, 'gpt-5.1');
+  assert.equal(ai.calls[0].kind, 'report');
+  assert.equal(ai.calls[0].params.reasoning_effort,'low');
+  assert(!('temperature' in ai.calls[0].params));
+  assert(!('summaries' in ai.calls[0].payload));
+  assert.deepEqual(ai.calls[0].payload.messages.map(m=>m.text),args.messages.map(m=>m.text));
+  assert.equal(result.coverage.strategy,'single');
+  assert.equal(result.usage.calls,1);
+  assert.equal(result.cost,(result.usage.inputTokens*1.25+result.usage.outputTokens*10)/1e6);
+  assert.match(ai.calls[0].params.messages[0].content,/вся исходная история/);
+  assert(!ai.calls[0].params.messages[0].content.includes('Используй только пары id/quote из переданных observations'));
+  const repeat = await analyzer.analyze(args);
+  assert.equal(repeat.cacheHit,true);
+  assert.equal(repeat.cost,0);
+  assert.equal(ai.calls.length,1);
+});
+
+test('single-pass refuses the full oversized history before API and never silently chunks it', async t => {
+  const {analyzer,ai} = await setup(t,{...loadAnalysisConfig({}),maxInputTokens:6000});
+  await assert.rejects(analyzer.analyze({chatId:'direct-limit',messages:[record(1,'История. '.repeat(7000))]}),{code:'BUDGET'});
+  assert.equal(ai.calls.length,0);
+});
+
+test('single-pass does not publish or retry a fabricated quote from the stronger model', async t => {
+  const ai = fakeAI(({result,response})=>{result.verdict.evidence=[{id:'1',quote:'Я этого не говорил'}];response.choices[0].message.content=JSON.stringify(result);return response;});
+  const {analyzer,directory} = await setup(t,loadAnalysisConfig({}),ai);
+  await assert.rejects(analyzer.analyze({chatId:'direct-evidence',messages:[record(1,'Привет')]}),e=>e.code==='EVIDENCE' && e.details.stage==='report' && e.details.usage.calls===1);
+  assert.equal(ai.calls.length,1);
+  const [subdirectory]=await fs.readdir(directory);
+  assert.equal((await fs.readdir(path.join(directory,subdirectory))).length,0);
+});
+
+test('direct and hierarchical caches remain distinct for the same model', async t => {
+  const {analyzer,ai,config}=await setup(t,{...loadAnalysisConfig({}),maxInputTokens:170000});
+  const args={chatId:'strategy-cache',messages:[record(1,'Одинаковое сообщение')]};
+  await analyzer.analyze(args);
+  const other=createAnalyzer({openai:ai,config:{...config,strategy:'hierarchical'}});
+  const result=await other.analyze(args);
+  assert.equal(result.cacheHit,false);
+  assert.equal(result.usage.calls,2);
+  assert.equal(ai.calls.length,3);
 });

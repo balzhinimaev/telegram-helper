@@ -59,7 +59,7 @@ async function main() {
   const config = loadAnalysisConfig(process.env);
   const initialSession = process.env.TG_SESSION || (fs.existsSync(sessionFile) ? fs.readFileSync(sessionFile, 'utf8').trim() : '');
   acquireLock();
-  runtime = { pid: process.pid, version: 'superanalysis-2', startedAt: new Date().toISOString(), model: config.model, stage: 'connecting' };
+  runtime = { pid: process.pid, version: 'superanalysis-3', startedAt: new Date().toISOString(), model: config.model, stage: 'connecting' };
   updateStatus({});
   client = new TelegramClient(new StringSession(initialSession), apiId, apiHash, { connectionRetries: 5, floodSleepThreshold: 30 });
   client.setLogLevel('error');

@@ -74,12 +74,12 @@ export function createCommandHandler({ client, meId, analyzer, state, targetIds 
         onProgress: async info => {
           status({ stage: info.stage });
           const suffix = info.total ? ` ${info.completed || 0}/${info.total}` : '';
-          await progress(`Обрабатываю историю${suffix}. Готовые части используются повторно; лимит расходов проверяется.`);
+          await progress(info.strategy === 'single' ? `Разбираю всю историю одним запросом (${analyzer.config.model}). Лимит расходов проверен.` : `Обрабатываю историю${suffix}. Готовые части используются повторно; лимит расходов проверяется.`);
         },
       });
       const mediaCount = records.filter(m => m.media).length;
       const coverage = command.limit === 'all'
-        ? 'Вся доступная текстовая история до команды; итог основан на сжатых разборах частей.'
+        ? (result.coverage?.strategy === 'single' ? 'Вся доступная текстовая история до команды передана модели целиком, одним запросом, без промежуточного сжатия.' : 'Вся доступная текстовая история до команды; итог основан на сжатых разборах частей.')
         : `Последние сообщения (лимит ${command.limit ?? defaultLimit}), не весь диалог.`;
       const header = command.mode === 'super' ? 'СУПЕРАНАЛИЗ ДИАЛОГА' : command.mode === 'question' ? 'ОТВЕТ ПО ПЕРЕПИСКЕ' : 'АНАЛИЗ ДИАЛОГА';
       const cost = Number(result.cost || 0).toFixed(4);
@@ -88,7 +88,7 @@ export function createCommandHandler({ client, meId, analyzer, state, targetIds 
       const chunks = splitPlainText(`${header}\n\n${body}${footer}`, 3400);
       for (let i = 0; i < chunks.length; i++) await send(`${chunks.length > 1 ? `Часть ${i+1}/${chunks.length}\n` : ''}${chunks[i]}`);
       await progress('Анализ готов. Результат ниже; повторная команда использует кэш для неизменившейся истории.', true);
-      status({ stage: 'ready', lastAnalysis: new Date().toISOString() });
+      status({ stage: 'ready', lastAnalysis: new Date().toISOString(), lastModel: result.model, lastStrategy: result.coverage?.strategy || 'hierarchical', lastCostUSD: Number(result.cost || 0), lastAPICalls: Number(result.usage?.calls || 0), lastTotalTokens: Number(result.usage?.totalTokens || 0), lastReportMessages: chunks.length, lastError: null, lastErrorReason: null, lastErrorStage: null });
     } catch (error) {
       // Never print raw API errors, prompts, keys or Telegram messages.
       const code = String(error?.code || error?.name || 'ANALYSIS_ERROR').replace(/[^A-Z_a-z0-9-]/g, '').slice(0,70);
