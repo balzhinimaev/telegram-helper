@@ -358,3 +358,20 @@ test('direct and hierarchical caches remain distinct for the same model', async 
   assert.equal(result.usage.calls,2);
   assert.equal(ai.calls.length,3);
 });
+
+test('direct references must exist and point to original text, not an attachment', async t => {
+  for (const badId of ['missing','2']) {
+    const ai=fakeAI(({result,response})=>{result.verdict.evidence=[{id:badId}];response.choices[0].message.content=JSON.stringify(result);return response;});
+    const {analyzer}=await setup(t,loadAnalysisConfig({}),ai);
+    await assert.rejects(analyzer.analyze({chatId:'bad-ref-'+badId,messages:[record(1,'Настоящий текст'),{...record(2,''),mediaOnly:true,media:'voice'}]}),e=>e.code==='EVIDENCE' && e.details.usage.calls===1);
+    assert.equal(ai.calls.length,1);
+  }
+});
+
+test('direct source excerpts preserve original Unicode, spelling and whitespace without asking AI to copy', async t => {
+  const {analyzer}=await setup(t,loadAnalysisConfig({}));
+  const source='нет\nя\tНЕ хочу 🙂';
+  const result=await analyzer.analyze({chatId:'verbatim-sources',messages:[record(1,source)]});
+  assert(result.content.includes('«'+source+'»'));
+  assert(!result.content.includes('начало сообщения'));
+});
